@@ -2,7 +2,7 @@
 // @name         Roll20 화자 목록 저널 순서 실시간 동기화
 // @homepageURL  https://trpgdata.tistory.com/48
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.1
 // @description  저널의 캐릭터 정렬 순서대로 채팅창 화자 드롭다운을 실시간 정렬
 // @match        https://app.roll20.net/editor*
 // @grant        none
