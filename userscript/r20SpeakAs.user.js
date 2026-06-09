@@ -7,8 +7,8 @@
 // @match        https://app.roll20.net/editor*
 // @grant        none
 // @run-at       document-idle
-// @updateURL    https://github.com/orzotea/TRPG_tools/raw/refs/heads/main/r20SpeakAs.user.js
-// @downloadURL  https://github.com/orzotea/TRPG_tools/raw/refs/heads/main/r20SpeakAs.user.js
+// @updateURL    https://github.com/orzotea/TRPG_tools/raw/refs/heads/main/userscript/r20SpeakAs.user.js
+// @downloadURL  https://github.com/orzotea/TRPG_tools/raw/refs/heads/main/userscript/r20SpeakAs.user.js
 // ==/UserScript==
 
 (function() {
