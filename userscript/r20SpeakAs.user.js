@@ -2,7 +2,7 @@
 // @name         Roll20 화자 목록 저널 순서 실시간 동기화
 // @homepageURL  https://trpgdata.tistory.com/48
 // @namespace    http://tampermonkey.net/
-// @version      1.4.1
+// @version      1.4.2
 // @description  채팅창 화자 드롭다운을 저널의 캐릭터 정렬 순서대로 정렬 / 전체공개 #6b92c1, 특정 유저 #aaaaaa으로 표시
 // @match        https://app.roll20.net/editor*
 // @grant        none
@@ -135,7 +135,7 @@
         options.forEach(opt => {
             const perm = findPermByName(permMap, opt.textContent.trim());
             if (perm === 'all') {
-                
+
         // 전체 공개 권한 컬러_연파랑
                 opt.style.color = '#6b92c1';
             } else if (perm === 'specific') {
@@ -168,6 +168,8 @@
             attachDotObservers();
             new MutationObserver(() => attachDotObservers())
                 .observe(journal, { childList: true, subtree: true });
+        } // 
+
         const chatRoot = document.getElementById('chatvariables')
                       || document.getElementById('chat-panel')
                       || document.body;
@@ -183,12 +185,14 @@
                 }
             }
         }).observe(chatRoot, { childList: true, subtree: true });
+
         document.addEventListener('mousedown', (e) => {
             if (e.target?.id === 'speakingas') sortSpeakingAs();
         }, true);
 
         sortSpeakingAs();
-    }
+    } // ← initObserver 함수를 닫음
+
     let waited = 0;
     const MAX_WAIT_MS = 120_000;
     const POLL_MS = 1_000;
