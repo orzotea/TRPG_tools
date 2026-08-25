@@ -2,7 +2,7 @@
 // @name         Roll20 화자 목록 저널 순서 실시간 동기화
 // @homepageURL  https://trpgdata.tistory.com/48
 // @namespace    http://tampermonkey.net/
-// @version      1.5.1
+// @version      1.5.4
 // @description  채팅창 화자 드롭다운을 저널의 캐릭터 정렬 순서대로 정렬 / 전체공개 #6b92c1, 특정 유저 #aaaaaa으로 표시 / 캐릭터 이미지 표시
 // @match        https://app.roll20.net/editor*
 // @grant        unsafeWindow
@@ -14,6 +14,9 @@
 (function () {
     'use strict';
 
+    // ─────────────────────────────────────────────────────────
+    // 색상 헬퍼
+    // ─────────────────────────────────────────────────────────
     function matchesRGB(colorStr, r, g, b) {
         if (!colorStr) return false;
         const m = colorStr.match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/i);
@@ -33,6 +36,9 @@
         return matchesRGB(colorStr, r, g, b);
     }
 
+    // ─────────────────────────────────────────────────────────
+    // 저널에서 캐릭터 정보(권한 + 이미지 URL) 추출
+    // ─────────────────────────────────────────────────────────
     function buildCharacterInfoMap() {
         const infoMap = new Map();
         const ALL_COLOR = '#3e88e7';
@@ -42,9 +48,13 @@
             const nameEl = item.querySelector('.namecontainer') || item.querySelector('.name');
             if (!nameEl) return;
             const name = nameEl.textContent.trim();
+
+            // 이미지 URL: Mixed Content 방지 http→https
             const tokenImg = item.querySelector('.token img');
             const rawSrc   = tokenImg ? tokenImg.src : null;
             const imgSrc   = rawSrc ? rawSrc.replace(/^http:\/\//i, 'https://') : null;
+
+            // 권한 판별
             const dotsContainer = item.querySelector('.playerdots');
             const dot = dotsContainer
                 ? dotsContainer.querySelector('.playerdot')
@@ -52,15 +62,11 @@
 
             let perm = 'gm';
             if (dot) {
-                const inlineColor = dot.style.color
-                                 || dot.style.backgroundColor
-                                 || dot.style.background
-                                 || '';
+                const inlineColor = dot.style.color || dot.style.backgroundColor || dot.style.background || '';
                 const cs = window.getComputedStyle(dot);
                 const computedColor = cs.color || cs.backgroundColor || '';
-                const isAll = matchesHex(inlineColor, ALL_COLOR)
-                           || matchesRGB(computedColor, AR, AG, AB);
-                perm = isAll ? 'all' : 'specific';
+                perm = (matchesHex(inlineColor, ALL_COLOR) || matchesRGB(computedColor, AR, AG, AB))
+                    ? 'all' : 'specific';
             }
 
             infoMap.set(name, { perm, imgSrc });
@@ -70,7 +76,7 @@
     }
 
     // ─────────────────────────────────────────────────────────
-    // 이름 매칭 헬퍼 (완전 일치 우선)
+    // 이름 매칭 헬퍼
     // ─────────────────────────────────────────────────────────
     function findJournalIndex(journalOrder, optName) {
         let idx = journalOrder.findIndex(n => n === optName);
@@ -92,84 +98,117 @@
     }
 
     // ─────────────────────────────────────────────────────────
-    // 커스텀 드롭다운 UI
-    //   - 기존 <select>는 숨김 유지, 실제 값 변경은 select.value + change 이벤트로 처리
-    //   - 목록 DOM은 열릴 때만 생성 후 닫힐 때 제거 (메모리 최소화)
+    // 커스텀 드롭다운 상태 (모듈 스코프 싱글톤)
     // ─────────────────────────────────────────────────────────
-    const CUSTOM_ID = 'r20speakas-custom';
+    const UI = {
+        wrapper:  null,
+        display:  null,
+        list:     null,
+        isOpen:   false,
+        infoMap:  null,
+        select:   null,
+    };
 
-    function getOrCreateCustomUI(select) {
-        let wrapper = document.getElementById(CUSTOM_ID);
-        if (wrapper) return wrapper;
+    // ─────────────────────────────────────────────────────────
+    // DOM 생성 (최초 1회)
+    // ─────────────────────────────────────────────────────────
+    function buildCustomUI(select) {
+        // wrapper
+        const wrapper = document.createElement('div');
+        wrapper.id = 'r20speakas-wrapper';
 
-        // wrapper: select와 같은 위치에 absolute로 덮어씌움
-        wrapper = document.createElement('div');
-        wrapper.id = CUSTOM_ID;
-
-        // 선택된 값 표시 영역 (항상 보임)
+        // display (선택된 값 표시, 항상 보임)
         const display = document.createElement('div');
-        display.id = CUSTOM_ID + '-display';
+        display.id = 'r20speakas-display';
         wrapper.appendChild(display);
 
-        // 드롭다운 목록: body에 직접 붙여 부모의 overflow:hidden 클리핑 완전 회피
+        // 화살표
+        const arrow = document.createElement('span');
+        arrow.textContent = '▾';
+        arrow.id = 'r20speakas-arrow';
+        wrapper.appendChild(arrow);
+
+        // list (열릴 때만 채워짐, body에 직접 부착 → overflow:hidden 클리핑 회피)
         const list = document.createElement('div');
-        list.id = CUSTOM_ID + '-list';
-        list.style.display = 'none';
-        list.style.position = 'fixed'; // fixed로 viewport 기준 배치
+        list.id = 'r20speakas-list';
         document.body.appendChild(list);
 
-        // select 바로 앞에 삽입
+        // select 바로 앞에 wrapper 삽입, select 숨김
         select.parentNode.insertBefore(wrapper, select);
+        select.style.display = 'none';
 
-        applyWrapperStyles(wrapper, display, list, select);
-        return wrapper;
-    }
+        // 스타일 적용
+        applyStyles(wrapper, display, arrow, list, select);
 
-    function applyWrapperStyles(wrapper, display, list, select) {
-        // select의 computed style을 읽어 wrapper 크기/폰트를 원래대로 맞춤
-        const cs = window.getComputedStyle(select);
+        // 싱글톤에 등록
+        UI.wrapper = wrapper;
+        UI.display = display;
+        UI.list    = list;
+        UI.select  = select;
 
-        // wrapper: select와 동일한 크기·폰트를 그대로 사용
-        Object.assign(wrapper.style, {
-            position:    'relative',
-            display:     'inline-flex',
-            alignItems:  'center',
-            cursor:      'pointer',
-            background:  cs.backgroundColor || '#fff',
-            border:      cs.border          || '1px solid #ccc',
-            borderRadius: cs.borderRadius   || '3px',
-            width:       cs.width,
-            height:      cs.height,
-            minWidth:    cs.minWidth !== '0px' ? cs.minWidth : cs.width,
-            boxSizing:   'border-box',
-            overflow:    'visible',  // 부모의 overflow:hidden에 의한 list 클리핑 방지
-            userSelect:  'none',
-            verticalAlign: cs.verticalAlign,
-            margin:      cs.margin,
+        // ── 이벤트 리스너 (최초 1회만 등록) ──
+
+        // wrapper 클릭 → 토글
+        wrapper.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (UI.isOpen) {
+                closeList();
+            } else {
+                openList();
+            }
         });
 
-        // display: 폰트·색상을 select에서 그대로 상속
+        // list 바깥 클릭 → 닫기
+        document.addEventListener('mousedown', (e) => {
+            if (UI.isOpen && !UI.wrapper.contains(e.target) && !UI.list.contains(e.target)) {
+                closeList();
+            }
+        }, true);
+
+        // Roll20이 select.value를 외부에서 바꿀 때 display 업데이트
+        select.addEventListener('change', () => {
+            renderDisplay();
+        });
+    }
+
+    function applyStyles(wrapper, display, arrow, list, select) {
+        const cs = window.getComputedStyle(select);
+
+        Object.assign(wrapper.style, {
+            position:      'relative',
+            display:       'inline-flex',
+            alignItems:    'center',
+            cursor:        'pointer',
+            background:    cs.backgroundColor || '#fff',
+            border:        cs.border          || '1px solid #ccc',
+            borderRadius:  cs.borderRadius    || '3px',
+            width:         cs.width,
+            height:        cs.height,
+            minWidth:      cs.minWidth !== '0px' ? cs.minWidth : cs.width,
+            boxSizing:     'border-box',
+            userSelect:    'none',
+            verticalAlign: cs.verticalAlign,
+            margin:        cs.margin,
+            overflow:      'visible',
+        });
+
         Object.assign(display.style, {
             display:      'flex',
             alignItems:   'center',
             gap:          '5px',
-            padding:      '0 20px 0 4px',
+            padding:      '0 18px 0 4px',
             width:        '100%',
             height:       '100%',
             overflow:     'hidden',
             whiteSpace:   'nowrap',
-            textOverflow: 'ellipsis',
             fontSize:     cs.fontSize,
             fontFamily:   cs.fontFamily,
             fontWeight:   cs.fontWeight,
             lineHeight:   cs.lineHeight,
-            color:        cs.color || '#333',
             boxSizing:    'border-box',
         });
 
-        // 화살표 아이콘
-        const arrow = document.createElement('span');
-        arrow.textContent = '▾';
         Object.assign(arrow.style, {
             position:      'absolute',
             right:         '4px',
@@ -179,50 +218,47 @@
             color:         cs.color || '#555',
             pointerEvents: 'none',
         });
-        wrapper.appendChild(arrow);
 
-        // list: 위로 펼쳐짐 (bottom: 100%), 스크롤 보장
         Object.assign(list.style, {
-            position:    'absolute',
-            bottom:      '100%',   // 위로 펼쳐지도록 변경
-            top:         'auto',
-            left:        '0',
-            zIndex:      '9999',
-            background:  '#fff',
-            border:      '1px solid #ccc',
-            borderBottom:'none',
-            borderRadius:'3px 3px 0 0',
-            minWidth:    '100%',
-            maxHeight:   '260px',
-            overflowY:   'scroll',  // auto 대신 scroll로 강제 (clip 방지)
-            overflowX:   'hidden',
-            boxShadow:   '0 -4px 8px rgba(0,0,0,0.15)',  // 위쪽 그림자
-            boxSizing:   'border-box',
-            fontSize:    cs.fontSize,
-            fontFamily:  cs.fontFamily,
+            position:     'fixed',       // viewport 기준 고정
+            zIndex:       '99999',
+            background:   '#fff',
+            border:       '1px solid #ccc',
+            borderRadius: '3px 3px 0 0',
+            maxHeight:    '260px',
+            overflowY:    'auto',
+            overflowX:    'hidden',
+            boxShadow:    '0 -4px 10px rgba(0,0,0,0.18)',
+            boxSizing:    'border-box',
+            fontSize:     cs.fontSize,
+            fontFamily:   cs.fontFamily,
+            display:      'none',
         });
     }
 
-    // 목록 항목 1개 생성 (이미지 + 이름)
+    // ─────────────────────────────────────────────────────────
+    // 목록 항목 생성
+    // ─────────────────────────────────────────────────────────
     function createListItem(value, label, imgSrc, color) {
         const item = document.createElement('div');
         Object.assign(item.style, {
             display:    'flex',
             alignItems: 'center',
             gap:        '5px',
-            padding:    '3px 6px',
+            padding:    '3px 8px',
             cursor:     'pointer',
             fontSize:   'inherit',
             fontFamily: 'inherit',
             color:      color || '#333',
             whiteSpace: 'nowrap',
+            boxSizing:  'border-box',
         });
-        item.dataset.value = value;
 
+        // 이미지 or spacer
         if (imgSrc) {
             const img = document.createElement('img');
-            img.src = imgSrc;
-            // 이미지 크기: 18×18px (썸네일, 가볍게)
+            img.src     = imgSrc;
+            img.loading = 'lazy';
             Object.assign(img.style, {
                 width:        '18px',
                 height:       '18px',
@@ -230,15 +266,13 @@
                 borderRadius: '2px',
                 flexShrink:   '0',
             });
-            img.loading = 'lazy'; // 열릴 때만 로드
             item.appendChild(img);
         } else {
-            // 이미지 없는 경우 빈 spacer로 정렬 맞춤
             const spacer = document.createElement('span');
             Object.assign(spacer.style, {
-                display:  'inline-block',
-                width:    '18px',
-                height:   '18px',
+                display:    'inline-block',
+                width:      '18px',
+                height:     '18px',
                 flexShrink: '0',
             });
             item.appendChild(spacer);
@@ -246,175 +280,124 @@
 
         const text = document.createElement('span');
         text.textContent = label;
-        Object.assign(text.style, {
-            overflow:     'hidden',
-            textOverflow: 'ellipsis',
-        });
         item.appendChild(text);
 
-        // hover 효과
-        item.addEventListener('mouseenter', () => {
-            item.style.background = '#e8f0fe';
-        });
-        item.addEventListener('mouseleave', () => {
-            item.style.background = '';
+        item.addEventListener('mouseenter', () => { item.style.background = '#e8f0fe'; });
+        item.addEventListener('mouseleave', () => { item.style.background = ''; });
+
+        // 항목 선택
+        item.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            UI.select.value = value;
+            UI.select.dispatchEvent(new Event('change', { bubbles: true }));
+            renderDisplay();
+            closeList();
         });
 
         return item;
     }
 
-    // display 영역 업데이트 (현재 선택값 반영)
-    function updateDisplay(display, select, infoMap) {
-        display.innerHTML = '';
-        const selectedOpt = select.options[select.selectedIndex];
-        if (!selectedOpt) return;
+    // ─────────────────────────────────────────────────────────
+    // display 영역 렌더
+    // ─────────────────────────────────────────────────────────
+    function renderDisplay() {
+        const display = UI.display;
+        const select  = UI.select;
+        const infoMap = UI.infoMap;
+        if (!display || !select) return;
 
-        const label = selectedOpt.textContent.trim();
+        display.innerHTML = '';
+        const opt = select.options[select.selectedIndex];
+        if (!opt) return;
+
+        const label = opt.textContent.trim();
         const info  = findInfoByName(infoMap, label);
 
         if (info?.imgSrc) {
             const img = document.createElement('img');
             img.src = info.imgSrc;
             Object.assign(img.style, {
-                width:        '18px',
-                height:       '18px',
-                objectFit:    'cover',
-                borderRadius: '2px',
-                flexShrink:   '0',
+                width: '18px', height: '18px',
+                objectFit: 'cover', borderRadius: '2px', flexShrink: '0',
             });
             display.appendChild(img);
         } else {
-            const spacer = document.createElement('span');
-            Object.assign(spacer.style, {
-                display: 'inline-block',
-                width:   '18px',
-                height:  '18px',
-                flexShrink: '0',
-            });
-            display.appendChild(spacer);
+            const sp = document.createElement('span');
+            Object.assign(sp.style, { display: 'inline-block', width: '18px', height: '18px', flexShrink: '0' });
+            display.appendChild(sp);
         }
 
         const text = document.createElement('span');
         text.textContent = label;
-        Object.assign(text.style, {
-            overflow:     'hidden',
-            textOverflow: 'ellipsis',
-            color: info?.perm === 'all'      ? '#6b92c1'
-                 : info?.perm === 'specific' ? '#aaaaaa'
-                 : '#333',
-        });
+        text.style.color = info?.perm === 'all'      ? '#6b92c1'
+                         : info?.perm === 'specific' ? '#aaaaaa'
+                         : (window.getComputedStyle(UI.select).color || '#333');
         display.appendChild(text);
     }
 
     // ─────────────────────────────────────────────────────────
-    // 커스텀 드롭다운 열기 / 닫기
+    // 열기 / 닫기
     // ─────────────────────────────────────────────────────────
-    let isOpen = false;
+    function openList() {
+        const list    = UI.list;
+        const select  = UI.select;
+        const infoMap = UI.infoMap;
+        const wrapper = UI.wrapper;
 
-    function openList(wrapper, list, select, infoMap) {
-        // 목록 DOM을 열릴 때마다 새로 생성 (항상 최신 option 반영)
+        // 목록 새로 채우기
         list.innerHTML = '';
-
         Array.from(select.options).forEach(opt => {
-            const label  = opt.textContent.trim();
-            const value  = opt.value;
-            const info   = findInfoByName(infoMap, label);
-            const color  = info?.perm === 'all'      ? '#6b92c1'
-                         : info?.perm === 'specific' ? '#aaaaaa'
-                         : '#333';
-
-            const item = createListItem(value, label, info?.imgSrc ?? null, color);
-
-            // 선택된 항목 배경 표시
-            if (opt.value === select.value) {
-                item.style.background = '#dce8ff';
-            }
-
-            item.addEventListener('mousedown', (e) => {
-                e.preventDefault(); // blur 방지
-                e.stopPropagation();
-                select.value = value;
-                // Roll20 내부 이벤트 연동 유지
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-                const display = document.getElementById(CUSTOM_ID + '-display');
-                if (display) updateDisplay(display, select, infoMap);
-                closeList(list);
-            });
-
+            const label = opt.textContent.trim();
+            const info  = findInfoByName(infoMap, label);
+            const color = info?.perm === 'all'      ? '#6b92c1'
+                        : info?.perm === 'specific' ? '#aaaaaa'
+                        : '#333';
+            const item = createListItem(opt.value, label, info?.imgSrc ?? null, color);
+            if (opt.value === select.value) item.style.background = '#dce8ff';
             list.appendChild(item);
         });
 
-        // wrapper 위치를 viewport 기준으로 계산해 list를 정확히 위에 배치
+        // wrapper 위치 계산 (fixed 배치)
         const rect = wrapper.getBoundingClientRect();
-        const listHeight = Math.min(260, list.scrollHeight || 260);
+        list.style.display = 'block';
+        list.style.left    = rect.left + 'px';
+        list.style.width   = rect.width + 'px';
 
-        Object.assign(list.style, {
-            display:  'block',
-            left:     rect.left + 'px',
-            width:    rect.width + 'px',
-            // wrapper 상단 기준으로 위로 붙임 (listHeight는 렌더 후 재계산)
-            top:      (rect.top - listHeight) + 'px',
-        });
-
-        // 렌더 후 실제 높이로 top 재계산 (내용이 적을 때 정확히 맞춤)
+        // 렌더 후 실제 높이로 top 계산 (위로 펼쳐짐)
         requestAnimationFrame(() => {
-            const actualH = Math.min(260, list.scrollHeight);
-            list.style.top = (rect.top - actualH) + 'px';
+            const h = Math.min(260, list.scrollHeight);
+            list.style.maxHeight = '260px';
+            list.style.top       = (rect.top - h) + 'px';
         });
 
-        isOpen = true;
+        UI.isOpen = true;
     }
 
-    function closeList(list) {
-        list.style.display = 'none';
-        // 목록 DOM 제거로 메모리 해제
-        list.innerHTML = '';
-        isOpen = false;
+    function closeList() {
+        UI.list.style.display = 'none';
+        UI.list.innerHTML = ''; // 메모리 해제
+        UI.isOpen = false;
     }
 
     // ─────────────────────────────────────────────────────────
-    // 커스텀 UI 초기화 (select에 연결)
+    // 커스텀 UI 갱신 (sortSpeakingAs에서 호출)
     // ─────────────────────────────────────────────────────────
-    function initCustomUI(select, infoMap) {
-        const wrapper = getOrCreateCustomUI(select);
-        const display = document.getElementById(CUSTOM_ID + '-display');
-        const list    = document.getElementById(CUSTOM_ID + '-list');
+    function syncCustomUI(select, infoMap) {
+        UI.infoMap = infoMap;
+        UI.select  = select;
 
-        // select 숨김 (Roll20 이벤트 연동을 위해 DOM은 유지)
-        select.style.display = 'none';
-
-        updateDisplay(display, select, infoMap);
-
-        // 기존 리스너 제거 후 재등록 (중복 방지)
-        const newWrapper = wrapper.cloneNode(false);
-        // cloneNode는 자식도 필요하므로, 리스너만 제거하는 방식으로 처리
-        wrapper._r20toggle = function (e) {
-            e.stopPropagation();
-            if (isOpen) {
-                closeList(list);
-            } else {
-                openList(wrapper, list, select, infoMap);
-            }
-        };
-        wrapper.removeEventListener('mousedown', wrapper._r20toggle);
-        wrapper.addEventListener('mousedown', wrapper._r20toggle);
-
-        // 바깥 클릭 시 닫기
-        if (!document._r20outsideHandler) {
-            document._r20outsideHandler = (e) => {
-                if (isOpen && !wrapper.contains(e.target)) {
-                    closeList(list);
-                }
-            };
-            document.addEventListener('mousedown', document._r20outsideHandler, true);
+        if (!UI.wrapper) {
+            // 최초 생성
+            buildCustomUI(select);
         }
 
-        // select.value가 외부에서 바뀔 때 (Roll20 내부 처리) display 업데이트
-        if (!select._r20changeHandler) {
-            select._r20changeHandler = () => {
-                updateDisplay(display, select, infoMap);
-            };
-            select.addEventListener('change', select._r20changeHandler);
+        // display 최신화
+        renderDisplay();
+
+        // 열려있으면 목록도 갱신
+        if (UI.isOpen) {
+            openList();
         }
     }
 
@@ -426,45 +409,36 @@
     function sortSpeakingAs() {
         if (isSorting) return;
         isSorting = true;
-        try {
-            _doSort();
-        } finally {
-            isSorting = false;
-        }
+        try { _doSort(); }
+        finally { isSorting = false; }
     }
 
     function _doSort() {
         const select = document.getElementById('speakingas');
         if (!select) return;
 
-        // 저널 캐릭터 순서 추출
+        // 저널 순서 추출
         const journalOrder = [];
         document.querySelectorAll('#journal .character').forEach(item => {
             const nameEl = item.querySelector('.namecontainer') || item.querySelector('.name');
             if (nameEl) journalOrder.push(nameEl.textContent.trim());
         });
 
-        // 캐릭터 정보 맵 (권한 + 이미지)
-        const infoMap = buildCharacterInfoMap();
-
-        // option 정렬
-        const options     = Array.from(select.options);
+        const infoMap      = buildCharacterInfoMap();
+        const options      = Array.from(select.options);
         const currentValue = select.value;
 
+        // 정렬
         if (journalOrder.length > 0) {
             options.sort((a, b) => {
                 const nameA = a.textContent.trim();
                 const nameB = b.textContent.trim();
-
-                // GM 항목 최상단 고정
                 const isGMA = nameA.includes('(GM)');
                 const isGMB = nameB.includes('(GM)');
                 if (isGMA && !isGMB) return -1;
                 if (!isGMA && isGMB) return 1;
-
                 const idxA = findJournalIndex(journalOrder, nameA);
                 const idxB = findJournalIndex(journalOrder, nameB);
-
                 if (idxA !== -1 && idxB !== -1) return idxA - idxB;
                 if (idxA !== -1) return -1;
                 if (idxB !== -1) return 1;
@@ -472,20 +446,19 @@
             });
         }
 
-        // select 재구성
+        // select 재구성 + 색상
         while (select.firstChild) select.removeChild(select.firstChild);
         options.forEach(opt => {
             const info = findInfoByName(infoMap, opt.textContent.trim());
-            if (info?.perm === 'all')      opt.style.color = '#6b92c1';
-            else if (info?.perm === 'specific') opt.style.color = '#aaaaaa';
-            else                               opt.style.color = '';
+            opt.style.color = info?.perm === 'all'      ? '#6b92c1'
+                            : info?.perm === 'specific' ? '#aaaaaa'
+                            : '';
             select.appendChild(opt);
         });
-
         if (select.value !== currentValue) select.value = currentValue;
 
-        // 커스텀 UI 갱신
-        initCustomUI(select, infoMap);
+        // 커스텀 UI 동기화
+        syncCustomUI(select, infoMap);
     }
 
     // ─────────────────────────────────────────────────────────
@@ -525,11 +498,6 @@
                 }
             }
         }).observe(chatRoot, { childList: true, subtree: true });
-
-        // 드롭다운 클릭 직전 재실행 (커스텀 UI 위에서 발동 방지를 위해 select 한정)
-        document.addEventListener('mousedown', (e) => {
-            if (e.target?.id === 'speakingas') sortSpeakingAs();
-        }, true);
 
         sortSpeakingAs();
     }
