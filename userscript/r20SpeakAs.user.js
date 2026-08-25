@@ -2,7 +2,7 @@
 // @name         Roll20 화자 목록 저널 순서 실시간 동기화
 // @homepageURL  https://trpgdata.tistory.com/48
 // @namespace    http://tampermonkey.net/
-// @version      1.5.4
+// @version      1.5.5
 // @description  채팅창 화자 드롭다운을 저널의 캐릭터 정렬 순서대로 정렬 / 전체공개 #6b92c1, 특정 유저 #aaaaaa으로 표시 / 캐릭터 이미지 표시
 // @match        https://app.roll20.net/editor*
 // @grant        unsafeWindow
@@ -14,9 +14,6 @@
 (function () {
     'use strict';
 
-    // ─────────────────────────────────────────────────────────
-    // 색상 헬퍼
-    // ─────────────────────────────────────────────────────────
     function matchesRGB(colorStr, r, g, b) {
         if (!colorStr) return false;
         const m = colorStr.match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/i);
@@ -36,9 +33,6 @@
         return matchesRGB(colorStr, r, g, b);
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 저널에서 캐릭터 정보(권한 + 이미지 URL) 추출
-    // ─────────────────────────────────────────────────────────
     function buildCharacterInfoMap() {
         const infoMap = new Map();
         const ALL_COLOR = '#3e88e7';
@@ -49,12 +43,10 @@
             if (!nameEl) return;
             const name = nameEl.textContent.trim();
 
-            // 이미지 URL: Mixed Content 방지 http→https
             const tokenImg = item.querySelector('.token img');
             const rawSrc   = tokenImg ? tokenImg.src : null;
-            const imgSrc   = rawSrc ? rawSrc.replace(/^http:\/\//i, 'https://') : null;
+            const imgSrc   = rawSrc ? rawSrc.replace(/^http:\/\//i, 'https://') : null; // Mixed Content 방지
 
-            // 권한 판별
             const dotsContainer = item.querySelector('.playerdots');
             const dot = dotsContainer
                 ? dotsContainer.querySelector('.playerdot')
@@ -75,9 +67,6 @@
         return infoMap;
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 이름 매칭 헬퍼
-    // ─────────────────────────────────────────────────────────
     function findJournalIndex(journalOrder, optName) {
         let idx = journalOrder.findIndex(n => n === optName);
         if (idx !== -1) return idx;
@@ -97,79 +86,58 @@
         return null;
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 커스텀 드롭다운 상태 (모듈 스코프 싱글톤)
-    // ─────────────────────────────────────────────────────────
+    // 커스텀 드롭다운 싱글톤 상태
     const UI = {
-        wrapper:  null,
-        display:  null,
-        list:     null,
-        isOpen:   false,
-        infoMap:  null,
-        select:   null,
+        wrapper: null,
+        display: null,
+        list:    null,
+        isOpen:  false,
+        infoMap: null,
+        select:  null,
     };
 
-    // ─────────────────────────────────────────────────────────
-    // DOM 생성 (최초 1회)
-    // ─────────────────────────────────────────────────────────
     function buildCustomUI(select) {
-        // wrapper
         const wrapper = document.createElement('div');
         wrapper.id = 'r20speakas-wrapper';
 
-        // display (선택된 값 표시, 항상 보임)
         const display = document.createElement('div');
         display.id = 'r20speakas-display';
         wrapper.appendChild(display);
 
-        // 화살표
         const arrow = document.createElement('span');
         arrow.textContent = '▾';
         arrow.id = 'r20speakas-arrow';
         wrapper.appendChild(arrow);
 
-        // list (열릴 때만 채워짐, body에 직접 부착 → overflow:hidden 클리핑 회피)
+        // list는 body에 직접 부착 → 부모 overflow:hidden 클리핑 회피
         const list = document.createElement('div');
         list.id = 'r20speakas-list';
         document.body.appendChild(list);
 
-        // select 바로 앞에 wrapper 삽입, select 숨김
         select.parentNode.insertBefore(wrapper, select);
         select.style.display = 'none';
 
-        // 스타일 적용
         applyStyles(wrapper, display, arrow, list, select);
 
-        // 싱글톤에 등록
         UI.wrapper = wrapper;
         UI.display = display;
         UI.list    = list;
         UI.select  = select;
 
-        // ── 이벤트 리스너 (최초 1회만 등록) ──
-
-        // wrapper 클릭 → 토글
+        // 이벤트 리스너는 최초 1회만 등록
         wrapper.addEventListener('mousedown', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (UI.isOpen) {
-                closeList();
-            } else {
-                openList();
-            }
+            UI.isOpen ? closeList() : openList();
         });
 
-        // list 바깥 클릭 → 닫기
         document.addEventListener('mousedown', (e) => {
             if (UI.isOpen && !UI.wrapper.contains(e.target) && !UI.list.contains(e.target)) {
                 closeList();
             }
         }, true);
 
-        // Roll20이 select.value를 외부에서 바꿀 때 display 업데이트
-        select.addEventListener('change', () => {
-            renderDisplay();
-        });
+        select.addEventListener('change', () => renderDisplay());
     }
 
     function applyStyles(wrapper, display, arrow, list, select) {
@@ -194,19 +162,19 @@
         });
 
         Object.assign(display.style, {
-            display:      'flex',
-            alignItems:   'center',
-            gap:          '5px',
-            padding:      '0 18px 0 4px',
-            width:        '100%',
-            height:       '100%',
-            overflow:     'hidden',
-            whiteSpace:   'nowrap',
-            fontSize:     cs.fontSize,
-            fontFamily:   cs.fontFamily,
-            fontWeight:   cs.fontWeight,
-            lineHeight:   cs.lineHeight,
-            boxSizing:    'border-box',
+            display:    'flex',
+            alignItems: 'center',
+            gap:        '5px',
+            padding:    '0 18px 0 4px',
+            width:      '100%',
+            height:     '100%',
+            overflow:   'hidden',
+            whiteSpace: 'nowrap',
+            fontSize:   cs.fontSize,
+            fontFamily: cs.fontFamily,
+            fontWeight: cs.fontWeight,
+            lineHeight: cs.lineHeight,
+            boxSizing:  'border-box',
         });
 
         Object.assign(arrow.style, {
@@ -220,7 +188,7 @@
         });
 
         Object.assign(list.style, {
-            position:     'fixed',       // viewport 기준 고정
+            position:     'fixed',
             zIndex:       '99999',
             background:   '#fff',
             border:       '1px solid #ccc',
@@ -236,9 +204,6 @@
         });
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 목록 항목 생성
-    // ─────────────────────────────────────────────────────────
     function createListItem(value, label, imgSrc, color) {
         const item = document.createElement('div');
         Object.assign(item.style, {
@@ -254,26 +219,19 @@
             boxSizing:  'border-box',
         });
 
-        // 이미지 or spacer
         if (imgSrc) {
             const img = document.createElement('img');
             img.src     = imgSrc;
             img.loading = 'lazy';
             Object.assign(img.style, {
-                width:        '18px',
-                height:       '18px',
-                objectFit:    'cover',
-                borderRadius: '2px',
-                flexShrink:   '0',
+                width: '18px', height: '18px',
+                objectFit: 'cover', borderRadius: '2px', flexShrink: '0',
             });
             item.appendChild(img);
         } else {
             const spacer = document.createElement('span');
             Object.assign(spacer.style, {
-                display:    'inline-block',
-                width:      '18px',
-                height:     '18px',
-                flexShrink: '0',
+                display: 'inline-block', width: '18px', height: '18px', flexShrink: '0',
             });
             item.appendChild(spacer);
         }
@@ -284,8 +242,6 @@
 
         item.addEventListener('mouseenter', () => { item.style.background = '#e8f0fe'; });
         item.addEventListener('mouseleave', () => { item.style.background = ''; });
-
-        // 항목 선택
         item.addEventListener('mousedown', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -298,13 +254,8 @@
         return item;
     }
 
-    // ─────────────────────────────────────────────────────────
-    // display 영역 렌더
-    // ─────────────────────────────────────────────────────────
     function renderDisplay() {
-        const display = UI.display;
-        const select  = UI.select;
-        const infoMap = UI.infoMap;
+        const { display, select, infoMap } = UI;
         if (!display || !select) return;
 
         display.innerHTML = '';
@@ -336,16 +287,9 @@
         display.appendChild(text);
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 열기 / 닫기
-    // ─────────────────────────────────────────────────────────
     function openList() {
-        const list    = UI.list;
-        const select  = UI.select;
-        const infoMap = UI.infoMap;
-        const wrapper = UI.wrapper;
+        const { list, select, infoMap, wrapper } = UI;
 
-        // 목록 새로 채우기
         list.innerHTML = '';
         Array.from(select.options).forEach(opt => {
             const label = opt.textContent.trim();
@@ -358,13 +302,11 @@
             list.appendChild(item);
         });
 
-        // wrapper 위치 계산 (fixed 배치)
         const rect = wrapper.getBoundingClientRect();
         list.style.display = 'block';
         list.style.left    = rect.left + 'px';
         list.style.width   = rect.width + 'px';
 
-        // 렌더 후 실제 높이로 top 계산 (위로 펼쳐짐)
         requestAnimationFrame(() => {
             const h = Math.min(260, list.scrollHeight);
             list.style.maxHeight = '260px';
@@ -376,34 +318,18 @@
 
     function closeList() {
         UI.list.style.display = 'none';
-        UI.list.innerHTML = ''; // 메모리 해제
+        UI.list.innerHTML = '';
         UI.isOpen = false;
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 커스텀 UI 갱신 (sortSpeakingAs에서 호출)
-    // ─────────────────────────────────────────────────────────
     function syncCustomUI(select, infoMap) {
         UI.infoMap = infoMap;
         UI.select  = select;
-
-        if (!UI.wrapper) {
-            // 최초 생성
-            buildCustomUI(select);
-        }
-
-        // display 최신화
+        if (!UI.wrapper) buildCustomUI(select);
         renderDisplay();
-
-        // 열려있으면 목록도 갱신
-        if (UI.isOpen) {
-            openList();
-        }
+        if (UI.isOpen) openList();
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 재진입 방지
-    // ─────────────────────────────────────────────────────────
     let isSorting = false;
 
     function sortSpeakingAs() {
@@ -417,7 +343,6 @@
         const select = document.getElementById('speakingas');
         if (!select) return;
 
-        // 저널 순서 추출
         const journalOrder = [];
         document.querySelectorAll('#journal .character').forEach(item => {
             const nameEl = item.querySelector('.namecontainer') || item.querySelector('.name');
@@ -428,7 +353,6 @@
         const options      = Array.from(select.options);
         const currentValue = select.value;
 
-        // 정렬
         if (journalOrder.length > 0) {
             options.sort((a, b) => {
                 const nameA = a.textContent.trim();
@@ -446,7 +370,6 @@
             });
         }
 
-        // select 재구성 + 색상
         while (select.firstChild) select.removeChild(select.firstChild);
         options.forEach(opt => {
             const info = findInfoByName(infoMap, opt.textContent.trim());
@@ -457,13 +380,9 @@
         });
         if (select.value !== currentValue) select.value = currentValue;
 
-        // 커스텀 UI 동기화
         syncCustomUI(select, infoMap);
     }
 
-    // ─────────────────────────────────────────────────────────
-    // Observer 초기화
-    // ─────────────────────────────────────────────────────────
     function initObserver() {
         const journal = document.getElementById('journal');
         if (journal) {
@@ -502,9 +421,6 @@
         sortSpeakingAs();
     }
 
-    // ─────────────────────────────────────────────────────────
-    // 폴링 (최대 2분)
-    // ─────────────────────────────────────────────────────────
     let waited = 0;
     const MAX_WAIT_MS = 120_000;
     const POLL_MS     = 1_000;
