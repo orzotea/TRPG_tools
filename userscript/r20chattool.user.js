@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         롤20 레이아웃2 올인원
+// @name         롤20 채팅 툴
 // @version      1.0.0
 // @match        https://app.roll20.net/editor*
 // @grant        none
