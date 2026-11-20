@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         롤20 채팅 툴
-// @version      1.0.0
+// @name         롤20 레이아웃2 올인원
+// @version      1.1.0
 // @match        https://app.roll20.net/editor*
 // @grant        none
 // @updateURL    https://github.com/orzotea/TRPG_tools/raw/refs/heads/main/userscript/r20chattool.user.js
@@ -121,6 +121,9 @@ if (!document.getElementById("custom-journal-style")) {
         .cj-header { display:flex; align-items:center; justify-content:space-between; padding:4px 8px; background:#f0f0f0; border-bottom:1px solid #e0e0e0; font-size:11px; font-weight:bold; color:#666; flex-shrink:0; cursor:move; user-select:none; }
         .cj-close-btn { background:none; border:none; cursor:pointer; font-size:13px; color:#999; padding:0 2px; line-height:1; }
         .cj-close-btn:hover { color:#333; }
+        .cj-header-btns { display:flex; align-items:center; gap:4px; }
+        .cj-sync-btn { background:none; border:none; cursor:pointer; font-size:12px; color:#999; padding:0 2px; line-height:1; }
+        .cj-sync-btn:hover { color:#1867c7; }
         .cj-drag-handle { cursor:grab; color:#cccccc; font-size:11px; flex-shrink:0; padding:0 3px 0 0; line-height:1; user-select:none; }
         .cj-drag-handle:active { cursor:grabbing; }
         .cj-item.cj-drag-over-top { border-top:2px solid #1867c7 !important; }
@@ -494,6 +497,30 @@ function applyCocofoliaLayout() {
         settingsPopup.appendChild(makeRow("캐릭터 사담", "charsadam"));
         settingsPopup.appendChild(makeRow("저널", "journal"));
 
+        // 저널 순서 자동 동기화 토글
+        {
+            const row = document.createElement("div");
+            row.className = "cs-row";
+            const labelSpan = document.createElement("span");
+            labelSpan.textContent = "저널 순서 자동 동기화";
+            labelSpan.title = "켜면 빠른 저널을 열 때마다 롤20 저널의 캐릭터 순서를 따릅니다";
+            const sw = document.createElement("label");
+            sw.className = "cs-switch";
+            const inp = document.createElement("input");
+            inp.type = "checkbox";
+            inp.checked = localStorage.getItem("r20_journal_sync_auto") === "true";
+            const slider = document.createElement("div");
+            slider.className = "cs-slider";
+            sw.appendChild(inp);
+            sw.appendChild(slider);
+            row.appendChild(labelSpan);
+            row.appendChild(sw);
+            inp.addEventListener("change", () => {
+                localStorage.setItem("r20_journal_sync_auto", String(inp.checked));
+            });
+            settingsPopup.appendChild(row);
+        }
+
         // 커스텀 버튼 섹션
         const csCustomHeader = document.createElement("div");
         csCustomHeader.className = "cs-header";
@@ -682,12 +709,21 @@ function applyCocofoliaLayout() {
             journalBtn.style.setProperty("background-color", CONFIG.inactiveBg, "important");   // 이거 없으면 롤20이 자꾸 덮어씌우네요…….
             journalBtn.style.setProperty("color", CONFIG.inactiveText, "important");
         };
+        const syncBtn = document.createElement("button");
+        syncBtn.className = "cj-sync-btn";
+        syncBtn.type = "button";
+        syncBtn.textContent = "⟳";
+        syncBtn.title = "롤20 저널 순서와 동기화";
+        const headerBtns = document.createElement("div");
+        headerBtns.className = "cj-header-btns";
+        headerBtns.appendChild(syncBtn);
+        headerBtns.appendChild(closeBtn);
         header.appendChild(titleSpan);
-        header.appendChild(closeBtn);
+        header.appendChild(headerBtns);
         popup.appendChild(header);
 
         header.addEventListener("mousedown", (e) => {
-            if (e.target.classList.contains("cj-close-btn")) return;
+            if (e.target.closest("button")) return;
             e.preventDefault();
             const r = popup.getBoundingClientRect();
             popup.style.left = r.left + "px"; popup.style.top = r.top + "px";
@@ -831,7 +867,54 @@ function applyCocofoliaLayout() {
             } else {
                 charList = raw;
             }
+            if (localStorage.getItem("r20_journal_sync_auto") === "true") {
+                syncWithJournal(false);
+            }
             updateList(searchInput.value);
+        };
+
+        // 롤20 저널(캐릭터 목록)의 표시 순서대로 캐릭터 ID 배열을 반환
+        const getJournalOrder = () => {
+            const root = document.getElementById("journal") || document;
+            const ids = [];
+            const seen = new Set();
+            root.querySelectorAll("li.character[data-itemid]").forEach(li => {
+                const id = li.dataset.itemid;
+                if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+            });
+            return ids;
+        };
+
+        // charList를 저널 순서로 재정렬
+        // - 플레이어 본인 등 캐릭터가 아닌 항목: 맨 위 (기존 순서 유지)
+        // - 저널에 있는 캐릭터: 저널 순서대로
+        // - 저널에서 찾지 못한 캐릭터: 맨 아래 (기존 순서 유지)
+        const syncWithJournal = (refresh = true) => {
+            const journalIds = getJournalOrder();
+            if (!journalIds.length) return false;
+            const rank = new Map(journalIds.map((id, i) => [id, i]));
+            const nonChars  = charList.filter(c => !c.id);
+            const inJournal = charList.filter(c => c.id && rank.has(c.id))
+                                      .sort((a, b) => rank.get(a.id) - rank.get(b.id));
+            const missing   = charList.filter(c => c.id && !rank.has(c.id));
+            charList = [...nonChars, ...inJournal, ...missing];
+            localStorage.setItem("r20_char_order", JSON.stringify(charList.map(c => c.value)));
+            if (refresh) updateList(searchInput.value);
+            return true;
+        };
+
+        syncBtn.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            loadCharacters();          // 말하기 목록 최신화
+            const ok = syncWithJournal();
+            syncBtn.textContent = ok ? "✓" : "✕";
+            syncBtn.style.color = ok ? "#1867c7" : "#e55";
+            syncBtn.title = ok ? "동기화 완료" : "저널에서 캐릭터를 찾지 못했습니다";
+            setTimeout(() => {
+                syncBtn.textContent = "⟳";
+                syncBtn.style.color = "";
+                syncBtn.title = "롤20 저널 순서와 동기화";
+            }, 1200);
         };
 
 // DOM -”-
@@ -970,7 +1053,7 @@ function applyDescPrefix(text) {
 function applySadamPrefix(text) {
     const trimmed = text.trim();
     if (!trimmed || trimmed.startsWith("/")) return text;
-    return `/o [${trimmed}](#"style="color:#8CADA6;")`; //사담 텍스트 컬러
+    return `/o [${trimmed}](#"style="color:#8CADA6;")`; //사담 잡담 텍스트 컬러
 }
 
 function applyCharSadamPrefix(text) {
